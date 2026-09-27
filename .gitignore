@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Environments
+.venv/
+venv/
+env/
+ENV/
+conda_env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Data (datasets are external and never tracked)
+data/
+dataset/
+datasets/
+Updated Dataset/
+*.arff
+*.parquet
+*.mat
+
+# Outputs (generated locally by experiment runs)
+outputs/
+output/
+results/
+runs/
+evidence/
+SIFHFAM_EVIDENCE/
+Outputs/
+fs_experiments/
+
+# Models / checkpoints
+checkpoints/
+weights/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Generated numerical artifacts
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.joblib
+*.xlsx
+*.xls
+
+# Generated tables / figures
+*.csv
+*.tsv
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+*.eps
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# Manuscript / review material
+*.tex
+*.bib
+*.docx
+reviewer*
+response*
+manuscript*
