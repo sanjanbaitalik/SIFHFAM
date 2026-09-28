@@ -7,7 +7,7 @@ corrected plug-in estimator is provided for sensitivity only.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Sequence, Tuple
+from typing import Dict, Sequence, Tuple
 
 import numpy as np
 
@@ -135,12 +135,94 @@ def total_correlation(cols: np.ndarray, estimator: str = "plugin",
     return max(0.0, tc)
 
 
-def group_redundancy(cols: np.ndarray, estimator: str = "plugin",
-                     marginals: Sequence[float] | None = None) -> Tuple[float, float]:
-    """Bounded group redundancy R_e = TC(e) / (sum_j H(X_j) + eps).
+# Numerical-zero tolerance for the corrected redundancy denominator D*.
+# tau is ONLY a numerical-zero threshold; no epsilon is added to a genuinely
+# positive denominator (that would prevent maximal redundancy from attaining 1).
+NORMALIZATION_TAU = 1e-12
+# Tiny floating-point tolerance allowed around the closed interval [0, 1].
+RANGE_TOL = 1e-9
+# A pre-clip deviation larger than this is a MATERIAL violation: it must fail
+# the normalization audit rather than be silently clipped.
+MATERIAL_VIOLATION = 1e-6
 
-    Returns (R_e, TC_e).  Safe when the denominator is zero (constant
-    features): returns (0.0, 0.0).
+
+def group_redundancy_detailed(cols: np.ndarray, estimator: str = "plugin",
+                              marginals: Sequence[float] | None = None,
+                              tau: float = NORMALIZATION_TAU) -> Dict[str, object]:
+    """Corrected maximum-attainable-total-correlation normalization.
+
+        TC(e)    = sum_j H(X_j) - H(X_e)
+        D*_e     = sum_j H(X_j) - max_j H(X_j)      (maximum attainable TC)
+        R*_e     = TC(e) / D*_e   if D*_e > tau, else 0
+
+    ``tau`` is only a numerical-zero tolerance.  No epsilon is added to a
+    genuinely positive denominator, so perfectly redundant groups attain
+    exactly 1.  The pre-clip deviation outside [0, 1] is recorded; values are
+    clipped only when the deviation is floating-point noise (<= RANGE_TOL).
+    A material violation raises instead of being silently clipped.
+    """
+    cols = np.asarray(cols)
+    if cols.ndim == 1:
+        cols = cols.reshape(-1, 1)
+    if marginals is None:
+        marginals = [entropy(cols[:, j], estimator) for j in range(cols.shape[1])]
+    sum_h = float(sum(marginals))
+    max_h = float(max(marginals)) if len(marginals) else 0.0
+    d_star = sum_h - max_h                     # >= 0 always (marginals >= 0)
+    tc = total_correlation(cols, estimator=estimator, marginals=marginals)
+
+    zero_denominator = bool(d_star <= tau)
+    if zero_denominator:
+        r_raw = 0.0
+        r_star = 0.0
+        deviation = 0.0
+    else:
+        r_raw = tc / d_star                    # NO epsilon on a positive denominator
+        deviation = float(max(0.0, -r_raw, r_raw - 1.0))
+        if deviation > MATERIAL_VIOLATION:
+            raise ValueError(
+                "MATERIAL normalisation violation: R* = "
+                f"{r_raw!r} outside [0,1] by {deviation!r} "
+                f"(TC={tc!r}, D*={d_star!r}). Refusing to clip silently.")
+        r_star = float(min(1.0, max(0.0, r_raw)))
+    return {
+        "r_star": r_star,
+        "r_pre_clip": float(r_raw),
+        "pre_clip_deviation": deviation,
+        "clipped": bool(0.0 < deviation <= RANGE_TOL),
+        "tc": float(tc),
+        "d_star": float(d_star),
+        "sum_marginals": sum_h,
+        "max_marginal": max_h,
+        "zero_denominator": zero_denominator,
+        "tau": float(tau),
+        "estimator": estimator,
+        "order": int(cols.shape[1]),
+    }
+
+
+def group_redundancy(cols: np.ndarray, estimator: str = "plugin",
+                     marginals: Sequence[float] | None = None,
+                     tau: float = NORMALIZATION_TAU) -> Tuple[float, float]:
+    """Corrected bounded group redundancy R*_e (see group_redundancy_detailed).
+
+    Returns (R*_e, TC_e).  Zero-denominator groups (e.g. all-constant, or one
+    non-constant variable plus constants) return (0.0, TC_e) with no NaN/Inf.
+    """
+    res = group_redundancy_detailed(cols, estimator=estimator,
+                                    marginals=marginals, tau=tau)
+    return float(res["r_star"]), float(res["tc"])
+
+
+def legacy_group_redundancy(cols: np.ndarray, estimator: str = "plugin",
+                            marginals: Sequence[float] | None = None) -> Tuple[float, float]:
+    """HISTORICAL (pre-correction) normalization, kept ONLY for delta audits.
+
+        R_e = TC(e) / (sum_j H(X_j) + eps)
+
+    Order-dependent bound: R_e <= (|e|-1)/|e| in the equal-entropy maximally
+    redundant case (duplicated pair ~0.5, triple ~2/3, quadruple ~0.75).
+    Never use this in the canonical pipeline.
     """
     cols = np.asarray(cols)
     if cols.ndim == 1:
@@ -152,7 +234,6 @@ def group_redundancy(cols: np.ndarray, estimator: str = "plugin",
     if denom <= EPS:
         return 0.0, 0.0
     r = tc / (denom + EPS)
-    # numerical safety: TC <= sum H up to floating point
     r = float(min(1.0, max(0.0, r)))
     return r, tc
 

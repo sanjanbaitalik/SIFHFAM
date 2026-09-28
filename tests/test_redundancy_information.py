@@ -33,15 +33,24 @@ def test_redundancy_independence_near_zero():
     assert r < 0.1
 
 
-def test_redundancy_duplicates_match_theory():
+def test_redundancy_duplicates_attain_one():
+    """Corrected normalization: maximally redundant groups attain exactly 1
+    (D* > 0).  The historical normalization capped them at (k-1)/k and is
+    retained only for delta audits."""
     rng = np.random.default_rng(2)
     base = rng.integers(0, 5, size=2000)
     X = Discretizer(bins=6).fit_transform(np.column_stack([base, base]))
     r, _ = group_redundancy(X)
-    assert abs(r - 0.5) < 1e-6
+    assert abs(r - 1.0) < 1e-9
     X3 = Discretizer(bins=6).fit_transform(np.column_stack([base, base, base]))
     r3, _ = group_redundancy(X3)
-    assert abs(r3 - 2 / 3) < 1e-6
+    assert abs(r3 - 1.0) < 1e-9
+    # documented historical behavior (delta audit only)
+    from sifhfam.information import legacy_group_redundancy
+    r_old_pair, _ = legacy_group_redundancy(X)
+    r_old_triple, _ = legacy_group_redundancy(X3)
+    assert abs(r_old_pair - 0.5) < 1e-6
+    assert abs(r_old_triple - 2 / 3) < 1e-6
 
 
 def test_redundancy_permutation_invariance():

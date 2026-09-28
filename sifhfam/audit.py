@@ -86,15 +86,15 @@ def audit_table_md() -> str:
         ("group redundancy",
          "Reviewer 2.6: TC(e)=sum H(X_j)-H(X_e) normalized into [0,1]",
          "TC/3 then divided by log(bins) (unbounded-by-construction quantity rescaled by max entropy, NOT by sum H)",
-         "TC/(sum H + eps) - already bounded",
-         "PARTIAL (reviewer_revision matches the requested form; sif_hfam.py does not)",
-         "Canonical implements TC/(sum H+eps) with tests (bounded, permutation-invariant, independence/duplicate cases)."),
+         "TC/(sum H + eps) (historical; order-dependent (k-1)/k ceiling)",
+         "PARTIAL (corrected canonical now uses TC/(sum H - max H) which attains the full [0,1] range)",
+         "Canonical implements R* = TC/(sumH - maxH) with tau-only zero handling, tested for [0,1] bounds, permutation invariance, independence ~0 and duplicates exactly 1."),
         ("redundancy normalization/range",
          "0 <= R_e <= 1",
          "TC/(3*log(bins+eps)) - range depends on bins, not on the feature set",
-         "TC/(sum H + eps) in [0,1]",
-         "PARTIAL",
-         "Canonical bounded form validated numerically; documented in REDUNDANCY_DEFINITION_AUDIT.md."),
+         "TC/(sum H + eps) in [0,1] but capped at (|e|-1)/|e| for duplicates",
+         "PARTIAL (historical bounded but order-dependent; corrected canonical is order-comparable)",
+         "Canonical R* = TC/D* validated numerically (duplicates attain 1); documented in REDUNDANCY_DEFINITION_AUDIT.md."),
         ("sigmoid use",
          "Sigmoid with defined midpoint before IFS normalization",
          "no sigmoid (raw evidences used directly)",
@@ -399,17 +399,33 @@ def run_redundancy_validation(out_dir: Path, seed: int = 0) -> Path:
     rows.append({"case": "independent_gaussians_binned", "R_e": r, "TC": tc,
                  "expected": "near 0", "pass": bool(r < 0.10)})
 
-    # 2) duplicate case: for k identical features TC/sumH = (k-1)/k exactly
+    # 2) duplicate cases: corrected normalization attains exactly 1 whenever
+    #    D* > 0 (the historical normalization was capped at (k-1)/k).
     base = rng.integers(0, 5, size=n)
     X_dup = Discretizer(bins=6).fit_transform(
         np.column_stack([base, base, base]))
     r, tc = group_redundancy(X_dup)
     rows.append({"case": "triplicate_feature", "R_e": r, "TC": tc,
-                 "expected": "~(k-1)/k = 2/3", "pass": bool(abs(r - 2.0 / 3.0) < 1e-6)})
+                 "expected": "1 (D*>0 maximally redundant)", "pass": bool(abs(r - 1.0) < 1e-9)})
     X_pair = Discretizer(bins=6).fit_transform(np.column_stack([base, base]))
     r2, tc2 = group_redundancy(X_pair)
     rows.append({"case": "duplicate_pair", "R_e": r2, "TC": tc2,
-                 "expected": "1/2", "pass": bool(abs(r2 - 0.5) < 1e-6)})
+                 "expected": "1", "pass": bool(abs(r2 - 1.0) < 1e-9)})
+    X_quad = Discretizer(bins=6).fit_transform(
+        np.column_stack([base, base, base, base]))
+    r4, tc4 = group_redundancy(X_quad)
+    rows.append({"case": "duplicate_quadruple", "R_e": r4, "TC": tc4,
+                 "expected": "1", "pass": bool(abs(r4 - 1.0) < 1e-9)})
+    # deterministic function of one member (D* > 0)
+    X_det = np.column_stack([base, base % 2])
+    rd, _ = group_redundancy(X_det)
+    rows.append({"case": "deterministic_function_of_one_member", "R_e": rd, "TC": np.nan,
+                 "expected": "1", "pass": bool(abs(rd - 1.0) < 1e-9)})
+    # one non-constant + constants: zero denominator -> 0
+    X_one = np.column_stack([base, np.zeros_like(base), np.zeros_like(base)])
+    r_one, _ = group_redundancy(X_one)
+    rows.append({"case": "one_nonconstant_plus_constants", "R_e": r_one, "TC": np.nan,
+                 "expected": "0 (zero denominator)", "pass": bool(r_one == 0.0)})
 
     # 3) bounds over random cases
     all_ok = True
@@ -558,7 +574,7 @@ Binary vs soft/fractional coverage comparisons (selected-feature differences,
 objective values, accuracy, stability) are produced under
 `07_ablation/` with `binary_coverage`, `soft_coverage`, `fraction_coverage`
 variants; submodularity sanity tests are in the test suite
-(`tests/test_objective.py`).
+(`tests_sifhfam/test_objective.py`).
 """
     out_dir.mkdir(parents=True, exist_ok=True)
     p = out_dir / "OBJECTIVE_SCOPE_AND_BEHAVIOR.md"
@@ -597,7 +613,7 @@ For a monotone submodular objective F with F(empty)=0 maximized subject to
 
 ## Code-verified theorem-compatible assumptions
 
-Verified by tests in `tests/test_theory_scope.py`:
+Verified by tests in `tests_sifhfam/test_theory_scope.py`:
 
 1. edge weights are non-negative in theorem-compatible mode;
 2. F is monotone on exhaustive/random small instances;
@@ -632,10 +648,21 @@ def write_redundancy_audit(out_dir: Path) -> Path:
 For a hyperedge e (feature subset) on discretized training data:
 
     TC(e)   = sum_{j in e} H(X_j) - H(X_e)          (total correlation)
-    R_e     = TC(e) / (sum_{j in e} H(X_j) + eps)    (bounded normalization)
+    D*_e    = sum_{j in e} H(X_j) - max_{j in e} H(X_j)
+                                                  (maximum attainable TC given
+                                                   the marginal entropies)
+    R_e     = TC(e) / D*_e    if D*_e > tau,
+              0               if D*_e <= tau
 
-with safe handling when the denominator is zero (all-constant features):
-R_e = 0.
+where `tau` is only a numerical-zero tolerance (NORMALIZATION_TAU). **No
+epsilon is added to a genuinely positive denominator**, so a perfectly
+redundant group attains exactly 1.
+
+Historical note: the previous normalization was
+`R_e = TC(e) / (sum_j H(X_j) + eps)`, whose equal-entropy maximally
+redundant bound is order-dependent: `R_e <= (|e|-1)/|e|` (duplicated pair
+~0.5, triple ~2/3, quadruple ~0.75). That normalization is retained in code
+only as `legacy_group_redundancy` for delta audits and is not canonical.
 
 ## Documented estimator choices
 
@@ -646,26 +673,37 @@ R_e = 0.
   the sample size.
 - **Entropy base**: natural logarithm (nats) throughout the codebase
   (`information.ENTROPY_BASE`).
-- **Zero-entropy features**: features with H(X_j)=0 contribute 0 to the sum;
-  if the whole denominator is 0, R_e is defined as 0 (never NaN/Inf).
-- **Feature-order invariance**: TC and R_e are symmetric in the columns of e
-  (tested by permutation).
+- **Zero-denominator groups**: all-constant groups, or one non-constant
+  variable plus constants, give `D* = 0` and `R_e = 0` (never NaN/Inf).
+- **Feature-order invariance**: TC, D* and R_e are symmetric in the columns
+  of e (tested by permutation).
 
-## Properties (numerically validated in `redundancy_validation.csv`)
+## Properties (numerically validated in `redundancy_validation.csv` and the
+normalization audit)
 
 1. finite for all tested inputs;
-2. `0 <= R_e <= 1` up to numerical tolerance;
-3. near zero for independent synthetic variables;
-4. near 1 for duplicated/strongly dependent variables;
+2. `0 <= R_e <= 1` within tiny floating-point tolerance (pre-clip deviation
+   recorded; material violations fail the audit instead of being clipped);
+3. near zero for independent synthetic variables (up to estimation error);
+4. exactly 1 for duplicated groups and deterministic functions of one member
+   whenever `D* > 0` (joint entropy equals the largest marginal entropy);
 5. invariant to feature ordering;
-6. plugin vs Miller-Madow both remain in [0,1] on tested cases.
+6. comparable across hyperedge orders (no `(k-1)/k` ceiling by construction);
+7. plugin vs Miller-Madow both remain in [0,1] on tested cases.
+
+## Sigmoid interpretation
+
+The established vertex/edge sigmoid parameters (a4=5, b4=-2.5) map a
+redundancy evidence of 0.5 to the midpoint 0.5 of the non-membership raw
+evidence. Because R_e is now truly bounded in [0,1], that midpoint is
+applied to a genuinely bounded score: `R_e=0 -> sigmoid(-2.5)`,
+`R_e=0.5 -> 0.5`, `R_e=1 -> sigmoid(2.5)` (high non-membership evidence).
 
 ## What must not be done
 
-- Do **not** apply a sigmoid midpoint interpretation to an unbounded
-  quantity. R_e is bounded; the legacy `sif_hfam.py` normalization
-  `TC/(3*log(bins))` is bins-dependent rather than feature-set-dependent and
-  is not used in the canonical path.
+- Do **not** add an epsilon to a genuinely positive denominator.
+- Do **not** claim the old order-dependent bound `(k-1)/k` for the canonical
+  score (that bound applies only to the historical normalization).
 - Group NMI must not be called "synergy"; no synergy measure is claimed.
 """
     out_dir.mkdir(parents=True, exist_ok=True)
